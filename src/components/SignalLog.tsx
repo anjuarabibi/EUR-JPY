@@ -60,7 +60,7 @@ export const SignalLog: React.FC<SignalLogProps> = ({ signals }) => {
                       "text-xs font-bold",
                       signal.type === 'BUY' ? "text-emerald-400" : "text-rose-400"
                     )}>
-                      SNIPER {signal.type} 🔥
+                      NEXT CANDLE {signal.type} 🔥
                     </p>
                     <p className="text-[10px] text-[#8E9299] font-mono">
                       {format(signal.time, 'HH:mm:ss')}

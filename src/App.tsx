@@ -33,6 +33,7 @@ export default function App() {
   const [lastSignalTrend, setLastSignalTrend] = useState<'UP' | 'DOWN' | null>(null);
   const [isBotRunning, setIsBotRunning] = useState(true);
   const [lastScanTime, setLastScanTime] = useState<string>('--:--:--');
+  const [candleTimer, setCandleTimer] = useState<number>(0);
   
   const dataRef = useRef<IndicatorData[]>([]);
 
@@ -108,66 +109,66 @@ export default function App() {
 
   const checkSignals = useCallback((currentData: IndicatorData[]) => {
     if (currentData.length < 5) return;
+    
+    // NEXT CANDLE SIGNAL RULE: 
+    // We analyze the LAST CLOSED candle (prev) to predict the CURRENT candle.
+    // The signal must be given within the first 30 seconds of the CURRENT candle.
+    const now = new Date();
+    const seconds = now.getSeconds();
+    if (seconds >= 30) return;
 
     const current = currentData[currentData.length - 1];
     const prev = currentData[currentData.length - 2];
 
-    if (!current.ema50 || !current.ema200 || !current.rsi || !current.volSMA) return;
+    if (!prev.ema50 || !prev.ema200 || !prev.rsi || !prev.volSMA) return;
 
-    // 1. IGNORE SIDEWAYS: EMA Distance & Slope
-    const emaDiff = Math.abs(current.ema50 - current.ema200);
-    const minEmaGap = 0.020; 
-    if (emaDiff < minEmaGap) return;
+    // 1. TREND FILTER (EMA 50/200)
+    const isUptrend = prev.ema50 > prev.ema200;
+    const isDowntrend = prev.ema50 < prev.ema200;
 
-    // 2. IGNORE WEAK CANDLES: Min body size
-    const currentBody = Math.abs(current.close - current.open);
-    const minBody = 0.004; 
-    if (currentBody < minBody) return;
+    // 2. VOLUME SCANNING (Volume Spike on previous candle)
+    const isVolSpike = prev.volume > prev.volSMA * 1.1;
 
-    // SYNC MODE LOGIC
-    const isUptrend = current.ema50 > current.ema200;
-    const isDowntrend = current.ema50 < current.ema200;
-
-    // BUY: EMA50 > EMA200, Close near EMA50, RSI 50-60, Bullish, Vol Spike
+    // BUY SIGNAL (Next Candle): Previous candle closed bullish near EMA50 in Uptrend with Vol Spike
     const isBuySignal = 
       isUptrend &&
-      current.close >= current.ema50 * 0.9995 && current.close <= current.ema50 * 1.0005 && // Near EMA50 (0.05% threshold)
-      current.rsi >= 50 && current.rsi <= 60 &&
-      current.volume > prev.volume &&
-      current.close > current.open;
+      prev.close >= prev.ema50 * 0.9995 && prev.close <= prev.ema50 * 1.0005 &&
+      prev.rsi >= 50 && prev.rsi <= 65 &&
+      isVolSpike &&
+      prev.close > prev.open;
 
-    // SELL: EMA50 < EMA200, Close near EMA50, RSI 40-50, Bearish, Vol Spike
+    // SELL SIGNAL (Next Candle): Previous candle closed bearish near EMA50 in Downtrend with Vol Spike
     const isSellSignal = 
       isDowntrend &&
-      current.close <= current.ema50 * 1.0005 && current.close >= current.ema50 * 0.9995 && // Near EMA50 (0.05% threshold)
-      current.rsi >= 40 && current.rsi <= 50 &&
-      current.volume > prev.volume &&
-      current.close < current.open;
+      prev.close <= prev.ema50 * 1.0005 && prev.close >= prev.ema50 * 0.9995 &&
+      prev.rsi >= 35 && prev.rsi <= 50 &&
+      isVolSpike &&
+      prev.close < prev.open;
 
-      if (isBuySignal && lastSignalTrend !== 'UP') {
+    if (isBuySignal && lastSignalTrend !== 'UP') {
       const newSignal: Signal = {
         id: Math.random().toString(36).substr(2, 9),
-        time: current.time,
+        time: Date.now(),
         type: 'BUY',
-        price: current.close,
+        price: current.open, // Entry at the start of the next candle
         status: 'ACTIVE',
-        tp: current.close + 0.120,
-        sl: current.close - 0.080
+        tp: current.open + 0.050,
+        sl: current.open - 0.030
       };
-      setSignals(prevSignals => [newSignal, ...prevSignals]);
+      setSignals(prevS => [newSignal, ...prevS].slice(0, 50));
       triggerAlert(newSignal);
       setLastSignalTrend('UP');
     } else if (isSellSignal && lastSignalTrend !== 'DOWN') {
       const newSignal: Signal = {
         id: Math.random().toString(36).substr(2, 9),
-        time: current.time,
+        time: Date.now(),
         type: 'SELL',
-        price: current.close,
+        price: current.open, // Entry at the start of the next candle
         status: 'ACTIVE',
-        tp: current.close - 0.120,
-        sl: current.close + 0.080
+        tp: current.open - 0.050,
+        sl: current.open + 0.030
       };
-      setSignals(prevSignals => [newSignal, ...prevSignals]);
+      setSignals(prevS => [newSignal, ...prevS].slice(0, 50));
       triggerAlert(newSignal);
       setLastSignalTrend('DOWN');
     }
@@ -183,21 +184,40 @@ export default function App() {
     if (!isBotRunning) return;
 
     const interval = setInterval(() => {
-      const last = dataRef.current[dataRef.current.length - 1];
-      const change = (Math.random() - 0.5) * 0.02;
-      const newCandle: Candle = {
-        time: last.time + 60000,
-        open: last.close,
-        close: last.close + change,
-        high: Math.max(last.close, last.close + change) + Math.random() * 0.01,
-        low: Math.min(last.close, last.close + change) - Math.random() * 0.01,
-        volume: Math.floor(Math.random() * 1200) + 400
-      };
+      const now = new Date();
+      const seconds = now.getSeconds();
+      setCandleTimer(60 - seconds);
 
-      const newData = [...dataRef.current, newCandle];
-      processData(newData);
+      const last = dataRef.current[dataRef.current.length - 1];
+      const change = (Math.random() - 0.5) * 0.005;
+      
+      // If it's a new minute, start a new candle
+      if (seconds === 0) {
+        const newCandle: Candle = {
+          time: now.getTime(),
+          open: last.close,
+          close: last.close + change,
+          high: Math.max(last.close, last.close + change) + Math.random() * 0.005,
+          low: Math.min(last.close, last.close + change) - Math.random() * 0.005,
+          volume: Math.floor(Math.random() * 1200) + 400
+        };
+        const newData = [...dataRef.current, newCandle];
+        processData(newData);
+      } else {
+        // Update current candle
+        const updatedCandle = {
+          ...last,
+          close: last.close + change,
+          high: Math.max(last.high, last.close + change),
+          low: Math.min(last.low, last.close + change),
+          volume: last.volume + Math.floor(Math.random() * 50)
+        };
+        const newData = [...dataRef.current.slice(0, -1), updatedCandle];
+        processData(newData);
+      }
+      
       checkSignals(dataRef.current);
-    }, 3000); // Fast simulation for demo
+    }, 1000); // 1-second precision
 
     return () => clearInterval(interval);
   }, [isBotRunning, checkSignals]);
@@ -371,6 +391,9 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <Clock size={14} className="text-[#8E9299]" />
                   <span className="text-xs text-[#8E9299]">1 Minute</span>
+                  <span className="text-xs font-mono text-emerald-500 font-bold ml-2">
+                    {Math.floor(candleTimer / 60)}:{(candleTimer % 60).toString().padStart(2, '0')}
+                  </span>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -388,6 +411,43 @@ export default function App() {
             <div className="flex-1 relative">
               <TradingViewWidget />
               
+              {/* TradingView Style Countdown Overlay */}
+              <div className="absolute top-4 right-4 z-10">
+                <div className="bg-[#1a1b1e]/90 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-md shadow-2xl flex items-center gap-3">
+                  <div className="flex flex-col">
+                    <span className="text-[8px] text-[#8E9299] uppercase font-bold tracking-tighter leading-none">Candle Close</span>
+                    <span className="text-lg font-mono font-bold text-emerald-400 leading-none mt-1">
+                      {Math.floor(candleTimer / 60)}:{(candleTimer % 60).toString().padStart(2, '0')}
+                    </span>
+                  </div>
+                  <div className="w-8 h-8 rounded-full border-2 border-emerald-500/20 flex items-center justify-center relative">
+                    <svg className="w-full h-full -rotate-90">
+                      <circle
+                        cx="16"
+                        cy="16"
+                        r="14"
+                        fill="transparent"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        className="text-emerald-500/10"
+                      />
+                      <circle
+                        cx="16"
+                        cy="16"
+                        r="14"
+                        fill="transparent"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeDasharray={88}
+                        strokeDashoffset={88 - (88 * candleTimer) / 60}
+                        className="text-emerald-500 transition-all duration-1000 ease-linear"
+                      />
+                    </svg>
+                    <Clock size={10} className="absolute text-emerald-500" />
+                  </div>
+                </div>
+              </div>
+
               {/* Scanning Status */}
               <div className="absolute bottom-4 left-4 z-10 flex flex-col gap-1">
                 <div className="flex items-center gap-2 bg-black/60 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10">
@@ -400,6 +460,26 @@ export default function App() {
                   </div>
                   <div className="bg-emerald-500/10 backdrop-blur-sm px-3 py-1 rounded-full border border-emerald-500/20">
                     <span className="text-[9px] font-mono text-emerald-500 uppercase tracking-widest font-bold">Market: LIVE</span>
+                  </div>
+                  <div className={cn(
+                    "backdrop-blur-sm px-3 py-1 rounded-full border transition-all flex items-center gap-2",
+                    (60 - candleTimer) < 30 
+                      ? "bg-emerald-500/20 border-emerald-500/40" 
+                      : "bg-rose-500/10 border-rose-500/20"
+                  )}>
+                    <div className={cn(
+                      "w-1.5 h-1.5 rounded-full animate-pulse",
+                      (60 - candleTimer) < 30 ? "bg-emerald-500" : "bg-rose-500"
+                    )} />
+                    <span className={cn(
+                      "text-[9px] font-mono uppercase tracking-widest font-bold",
+                      (60 - candleTimer) < 30 ? "text-emerald-400" : "text-rose-400"
+                    )}>
+                      {(60 - candleTimer) < 30 ? "NEXT CANDLE SCAN: ACTIVE" : "WAITING FOR NEXT CANDLE"}
+                    </span>
+                    <span className="text-[10px] font-mono text-white/80 border-l border-white/10 pl-2 ml-1">
+                      CLOSE: {Math.floor(candleTimer / 60)}:{(candleTimer % 60).toString().padStart(2, '0')}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -420,9 +500,9 @@ export default function App() {
                       <Zap size={20} className="text-white animate-pulse" />
                     </div>
                     <div>
-                      <p className="text-[10px] uppercase font-bold tracking-widest opacity-70">AI Signal Engine</p>
+                      <p className="text-[10px] uppercase font-bold tracking-widest opacity-70">Next Candle Signal</p>
                       <p className="text-lg font-black tracking-tighter">
-                        SNIPER {lastSignal.type} @ {lastSignal.price.toFixed(3)}
+                        {lastSignal.type} @ {lastSignal.price.toFixed(3)} 🔥
                       </p>
                     </div>
                   </div>
