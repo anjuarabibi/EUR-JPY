@@ -1,0 +1,5 @@
+{
+  "name": "EURJPY 1M Sniper Bot",
+  "description": "A high-precision 1-minute sniper trading bot for EURJPY using EMA, RSI, and Volume indicators.",
+  "requestFramePermissions": []
+}
